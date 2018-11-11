@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 let program = require('commander');
 let shell = require('shelljs');
-let colors = require('colors');
 let fs = require('fs-extra');
 const replace = require('replace');
 const template = require('./component_template/template');
@@ -10,19 +9,17 @@ let appDirectory;
 let newCompPath;
 let nofolder;
 let functional;
-let observable;
+let redux;
 let stylesheet;
 program
   .version('2.0.8')
   .command('init <dir>')
-  .option('-T , --typscript', 'Install with typescript')
   .action(createReact);
 program
   .command('gc <component>')
-  .option('-n, --nofolder', 'Do not wrap component in folder')
-  .option('-o, --observable', 'Make observable')
-  .option('-s, --style', 'With stylesheet')
+  .option('-r, --redux', 'Connect to redux')
   .option('-f, --functional', 'Create functional component')
+  .option('-s, --subcomponent <parentpath>', 'Create sub component')
   .action(createComponent);
 program.parse(process.argv)
 async function createReact(dir) {
@@ -36,23 +33,14 @@ async function createReact(dir) {
   if (!success) {
     console.log('Something went wrong while trying to create a new React app using create-react-app'.red);
     process.exit(1);
-  } else {
-    await installPackages();
-    await updatePackage_json();
-    await generateBoilerplate();
-    shell.exec(`npm install`, { cwd: appDirectory }, (e) => {
-      console.log("All done");
-    });
-
   }
-
 }
 function createReactApp() {
   return new Promise(resolve => {
     if (appName) {
       console.log("\nCreating react app...".cyan);
       try {
-        shell.exec(`node ${require('path').dirname(require.main.filename)}/node_modules/create-react-app/index.js ${appName}`, (e, stdout, stderr) => {
+        shell.exec(`node ${require('path').dirname(require.main.filename)}/node_modules/create-react-app/index.js ${appName} --scripts-version @ichebbi/react-scripts`, (e, stdout, stderr) => {
           if (stderr) {
             if (e == 127) {
               console.log(`create-react-app not installed \n install create-react-app first globally use :`.red);
@@ -86,113 +74,120 @@ function createReactApp() {
     }
   })
 }
-function installPackages() {
-  return new Promise(resolve => {
-    console.log("\nInstalling react-router, react-router-dom, react-lazy-route, axios, sass and redux...".cyan);
-    shell.exec(`npm install --save react-router react-router-dom react-lazy-route axios mobx mobx-react node-sass-chokidar npm-run-all`, { cwd: appDirectory }, (e) => {
-      console.log("\nFinished installing packages\n".green);
-      resolve()
-    });
-  });
-}
-function updatePackage_json() {
-  let scripts = {
-    "build-css": "node-sass-chokidar src/ -o src/",
-    "watch-css": "npm run build-css && node-sass-chokidar src/ -o src/ --watch --recursive",
-    "start-js": "react-scripts start",
-    "start": "npm-run-all -p watch-css start-js",
-    "build-js": "react-scripts build",
-    "build": "npm-run-all build-css build-js",
-    "test": "react-scripts test --env=jsdom",
-    "eject": "react-scripts eject"
-  };
-  return new Promise(resolve => {
-    console.log("\nUpdating package.json....".cyan);
-    shell.exec(`node ${require('path').dirname(require.main.filename)}/node_modules/json/lib/json.js -I -f package.json -e 'this.scripts=` + JSON.stringify(scripts) + "'", { cwd: appDirectory }, () => {
-      resolve();
-    });
-  })
-}
-function generateBoilerplate() {
-  console.log();
-  console.log("\nGenerating boilerplate...".cyan);
-  return new Promise(resolve => {
-    fs.unlinkSync(`${appDirectory}/src/App.css`);
-    fs.unlinkSync(`${appDirectory}/src/App.js`);
-    fs.unlinkSync(`${appDirectory}/src/App.test.js`);
-    fs.unlinkSync(`${appDirectory}/src/index.css`);
-    fs.unlinkSync(`${appDirectory}/src/logo.svg`);
-    fs.copySync(`${require('path').dirname(require.main.filename)}/templates`, `${appDirectory}/src`);
-    resolve();
-  })
-}
-async function createComponent(component, cmd) {
+
+async function createComponent(component, cmd, arg) {
   newCompPath = component;
-  cmd.nofolder ? nofolder = true : nofolder = false;
-  cmd.functional ? functional = true : functional = false;
-  cmd.observable ? observable = true : observable = false;
-  cmd.style ? stylesheet = true : stylesheet = false;
+  cmd.functional ? functional = true : functional = false
+  cmd.redux ? redux = true : redux = false
+
+  if (cmd.redux && cmd.subcomponent) {
+    console.log('You can\'t create a connect subcomponent '.red);
+    process.exit(1);
+  }
+
+  if (cmd.subcomponent && !fs.existsSync(`./src/components/${cmd.subcomponent}`)) {
+    console.log(`${cmd.subcomponent} does not exist`.red);
+    process.exit(1);
+  }
+
   if (fs.existsSync('./src/components')) {
-    newCompPath = `./src/components/${component}`;
+    newCompPath = cmd.subcomponent ? `./src/components/${cmd.subcomponent}/subcomponents/${component}` : `./src/components/${component}`
   }
-  let template = await buildTemplate();
-  writeFile(template, component)
+  // let template = await buildTemplate();
+  const presentationalTemplate = buildPresentationalTemplate()
+  const containerTemplate = buildContainerTemplate()
+  await writeFile(presentationalTemplate, containerTemplate, component)
 }
-function buildTemplate() {
-  let imports = [template.imports.react, template.imports.propTypes];
-  if (observable) {
-    imports.push(template.imports.observable)
-  }
-  if (stylesheet) {
-    imports.push(template.imports.stylesheet);
-  }
-  let body = functional ? [template.functional] : [template.main].join('\n');
-  let exported = observable ? [template.exported.observable] : [template.exported.default];
-  return imports.join('\n') + '\n' + body + '\n' + exported;
+
+function buildPresentationalTemplate() {
+  const imports = [
+    functional ? template.imports.reactFunctional : template.imports.react,
+    template.imports.propTypes,
+    template.imports.stylesheet
+  ]
+
+  const body = functional ? [template.functional] : [template.main]
+  return imports.join('\n') + '\n' + body
 }
+
+function buildContainerTemplate() {
+  if (redux) {
+    const imports = [
+      template.imports.connect,
+      template.imports.withReducer,
+      '',
+      template.imports.reducer,
+      template.imports.sampleOperation,
+      template.imports.presentationalComponent
+    ]
+    return imports.join('\n') + template.reduxContainer
+  } else {
+    return template.imports.presentationalComponent + '\n' + [template.container].join('\n')
+  }
+}
+
 function capitalize(comp) {
   return comp[0].toUpperCase() + comp.substring(1, comp.length);
 }
-function writeFile(template, component) {
-  let path = newCompPath;
-  if (nofolder) {
-    strArr = newCompPath.split('/');
-    strArr.splice(strArr.length - 1, 1);
-    path = strArr.join('/');
-    console.log(path);
-  }
+async function writeFile(presentationalTemplate, containerTemplate, component) {
+  let path = newCompPath
+
   let comp = component.split('/');
   comp = comp[comp.length - 1];
+  let presentationalPath
+  let containerPath
   if (path) {
-    path = path + '/' + capitalize(comp);
+    presentationalPath = path + '/' + capitalize(comp);
+    containerPath = path + '/index'
   } else {
-    path = capitalize(comp);
+    presentationalPath = capitalize(comp);
   }
-  if (stylesheet) {
-    if (!fs.existsSync(`${path}.scss`)) {
-      console.log('creating syles');
-      fs.outputFileSync(`${path}.scss`, '');
-      console.log(`Stylesheet ${comp} created at ${path}.scss`.cyan)
-    } else {
-      console.log(`Stylesheet ${comp} allready exists at ${path}.scss, choose another name if you want to create a new stylesheet`.red)
+
+  //create stylesheet
+  if (!fs.existsSync(`${presentationalPath}.scss`)) {
+    console.log('creating syles');
+    fs.outputFileSync(`${presentationalPath}.scss`, '');
+    console.log(`Stylesheet ${comp} created at ${presentationalPath}.scss`.cyan)
+  } else {
+    console.log(`Stylesheet ${comp} allready exists at ${presentationalPath}.scss, choose another name if you want to create a new stylesheet`.red)
+  }
+
+  if (redux) {
+    await new Promise(resolve => {
+      fs.copySync(`${require('path').dirname(require.main.filename)}/component_template/duck`, `${path}/duck`)
+      resolve()
+    })
+  }
+
+  writeTemplate(presentationalTemplate, presentationalPath, 'jsx');
+  writeTemplate(containerTemplate, containerPath, 'js');
+
+  function writeTemplate(template, path, extension) {
+    if (!fs.existsSync(`${path}.${extension}`)) {
+      fs.outputFile(`${path}.${extension}`, template, (err) => {
+        if (err)
+          throw err;
+        replace({
+          regex: ':className',
+          replacement: capitalize(comp),
+          paths: [`${path}.${extension}`],
+          recursive: false,
+          silent: true,
+        })
+        if (redux)
+          replace({
+            regex: ':reducerName',
+            replacement: comp,
+            paths: [`${path}.${extension}`],
+            recursive: false,
+            silent: true,
+          })
+        console.log(`Component ${comp} created at ${path}.${extension}`.cyan);
+      });
+    }
+    else {
+      console.log(`Component ${comp} allready exists at ${path}.${extension}, choose another name if you want to create a new component`.red);
     }
   }
-  if (!fs.existsSync(`${path}.js`)) {
-    fs.outputFile(`${path}.js`, template, (err) => {
-      if (err) throw err;
-      replace({
-        regex: ":className",
-        replacement: capitalize(comp),
-        paths: [`${path}.js`],
-        recursive: false,
-        silent: true,
-      });
-      console.log(`Component ${comp} created at ${path}.js`.cyan)
-    });
-  } else {
-    console.log(`Component ${comp} allready exists at ${path}.js, choose another name if you want to create a new component`.red)
-  }
-
-
 }
 
